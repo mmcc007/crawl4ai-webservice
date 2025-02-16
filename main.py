@@ -1,11 +1,11 @@
 import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
+from crawl4ai import AsyncWebCrawler
+from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode
 import logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Crawl4AI Web Service")
@@ -22,20 +22,38 @@ async def health():
 async def crawl_endpoint(request: CrawlRequest):
     logger.info(f"Starting crawl for URL: {request.url}")
     
-    browser_config = BrowserConfig(headless=True)
-    crawl_config = CrawlerRunConfig()
-    
     try:
+        # Configure with cache disabled
+        browser_config = BrowserConfig(verbose=True)
+        run_config = CrawlerRunConfig(
+            cache_mode=CacheMode.DISABLED,  # Disable caching
+            word_count_threshold=10,        # Include content blocks with >10 words
+            process_iframes=True,           # Process iframe content
+            remove_overlay_elements=True    # Remove popups/modals
+        )
+        
         async with AsyncWebCrawler(config=browser_config) as crawler:
             logger.info("Crawler initialized, starting crawl...")
-            result = await crawler.arun(url=request.url, config=crawl_config)
+            result = await crawler.arun(
+                url=request.url,
+                config=run_config
+            )
+            
             logger.info(f"Crawl completed. Success: {result.success}")
-            logger.info(f"Result content length: {len(result.markdown) if result.markdown else 0}")
             
             if result.success:
-                return {"result": result.markdown, "metadata": {"success": True}}
+                return {
+                    "result": result.markdown,
+                    "metadata": {
+                        "success": True,
+                        "status_code": result.status_code
+                    }
+                }
             else:
-                raise HTTPException(status_code=500, detail="Crawling failed")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Crawling failed: {result.error_message}"
+                )
     except Exception as e:
         logger.error(f"Crawl error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

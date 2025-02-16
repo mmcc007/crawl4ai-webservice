@@ -3,8 +3,18 @@ import argparse
 import requests
 import sys
 import json
+import os
+from typing import Optional, Dict, Any
 
-def crawl_url(url, host="localhost", port=11235):
+def get_api_token() -> str:
+    """Get API token from environment variable."""
+    token = os.getenv('CRAWL4AI_API_TOKEN')
+    if not token:
+        print("Error: CRAWL4AI_API_TOKEN environment variable is not set")
+        sys.exit(1)
+    return token
+
+def crawl_url(url: str, host: str = "localhost", port: int = 11235) -> Dict[str, Any]:
     """
     Call the crawl service for a given URL.
     
@@ -17,22 +27,29 @@ def crawl_url(url, host="localhost", port=11235):
         dict: The crawl results
     """
     endpoint = f"http://{host}:{port}/crawl"
+    api_token = get_api_token()
     
     # Prepare the request payload
     payload = {
-        "url": url,
+        "urls": url,
         "priority": 10
+    }
+    
+    # Prepare headers with authentication
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json"
     }
     
     try:
         # First check if the service is healthy
-        health_check = requests.get(f"http://{host}:{port}/health")
-        if health_check.status_code != 200:
-            print("Error: Crawl service is not healthy")
-            sys.exit(1)
+        # health_check = requests.get(f"http://{host}:{port}/health")
+        # if health_check.status_code != 200:
+        #     print("Error: Crawl service is not healthy")
+        #     sys.exit(1)
             
         # Make the crawl request
-        response = requests.post(endpoint, json=payload)
+        response = requests.post(endpoint, json=payload, headers=headers)
         
         # Check if request was successful
         response.raise_for_status()

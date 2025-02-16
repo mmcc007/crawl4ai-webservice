@@ -96,9 +96,14 @@ def crawl_url(url: str, host: str = "localhost", port: int = 11235, wait_for_res
             if wait_for_result:
                 final_result = wait_for_task_completion(base_url, task_id, headers)
                 if 'result' in final_result:
+                    # Handle nested result structure
+                    markdown_content = final_result['result'].get('result', '')
+                    if isinstance(markdown_content, dict):
+                        markdown_content = json.dumps(markdown_content, indent=2)
+                    
                     # Save markdown to file
                     with open('crawl_result.md', 'w') as f:
-                        f.write(final_result['result'])
+                        f.write(markdown_content)
                     print(f"\nMarkdown result saved to crawl_result.md")
                 return final_result
             

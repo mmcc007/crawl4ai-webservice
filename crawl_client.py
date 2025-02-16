@@ -5,8 +5,10 @@ import sys
 import json
 import os
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from urllib.parse import urlparse
+
+CrawlMode = Literal['async', 'sync', 'direct']
 
 def get_api_token() -> str:
     """Get API token from environment variable."""
@@ -17,20 +19,9 @@ def get_api_token() -> str:
     return token
 
 def wait_for_task_completion(base_url: str, task_id: str, headers: Dict[str, str], max_wait: int = 60) -> Dict[str, Any]:
-    """
-    Poll task status until completion or timeout.
-    
-    Args:
-        base_url: Base URL of the service
-        task_id: Task ID to check
-        headers: Request headers
-        max_wait: Maximum wait time in seconds
-        
-    Returns:
-        dict: Final task status and result
-    """
+    """Poll task status until completion or timeout."""
     start_time = time.time()
-    polling_interval = 2  # seconds
+    polling_interval = 2
     
     while True:
         if time.time() - start_time > max_wait:
@@ -42,7 +33,6 @@ def wait_for_task_completion(base_url: str, task_id: str, headers: Dict[str, str
             status_data = response.json()
             print(f"Task Status: {status_data.get('status', 'unknown')}")
             
-            # Check if task is complete
             if status_data.get('status') == 'completed':
                 return status_data
             elif status_data.get('status') == 'failed':
@@ -51,18 +41,40 @@ def wait_for_task_completion(base_url: str, task_id: str, headers: Dict[str, str
                 
         time.sleep(polling_interval)
 
-def crawl_url(url: str, host: str = "localhost", port: int = 11235, wait_for_result: bool = True) -> Dict[str, Any]:
+def save_markdown_result(result: Dict[str, Any], filename: str = 'crawl_result.md') -> None:
+    """Save crawl result to markdown file."""
+    try:
+        # Handle various result formats
+        if isinstance(result, dict):
+            if 'result' in result:
+                markdown_content = result['result']
+                if isinstance(markdown_content, dict):
+                    if 'markdown' in markdown_content:
+                        markdown_content = markdown_content['markdown']
+                    else:
+                        markdown_content = json.dumps(markdown_content, indent=2)
+            else:
+                markdown_content = json.dumps(result, indent=2)
+        else:
+            markdown_content = str(result)
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+        print(f"\nMarkdown result saved to {filename}")
+    except Exception as e:
+        print(f"Error saving markdown result: {e}")
+        sys.exit(1)
+
+def crawl_url(url: str, mode: CrawlMode = 'sync', host: str = "localhost", 
+              port: int = 11235) -> Dict[str, Any]:
     """
-    Call the crawl service for a given URL and optionally wait for results.
+    Call the crawl service using specified mode.
     
     Args:
-        url (str): The URL to crawl
-        host (str): The hostname where the service is running
-        port (int): The port number of the service
-        wait_for_result (bool): Whether to wait for task completion
-        
-    Returns:
-        dict: The crawl results
+        url: The URL to crawl
+        mode: 'async', 'sync', or 'direct'
+        host: The hostname where the service is running
+        port: The port number of the service
     """
     is_cloud_host = not host.startswith(('localhost', '127.0.0.1'))
     protocol = 'https' if is_cloud_host else 'http'
@@ -71,9 +83,15 @@ def crawl_url(url: str, host: str = "localhost", port: int = 11235, wait_for_res
     if not is_cloud_host:
         base_url = f"{base_url}:{port}"
     
-    endpoint = f"{base_url}/crawl"
-    api_token = get_api_token()
+    # Select endpoint based on mode
+    endpoints = {
+        'async': '/crawl',
+        'sync': '/crawl_sync',
+        'direct': '/crawl_direct'
+    }
+    endpoint = f"{base_url}{endpoints[mode]}"
     
+    api_token = get_api_token()
     payload = {
         "urls": url,
         "priority": 10
@@ -85,30 +103,22 @@ def crawl_url(url: str, host: str = "localhost", port: int = 11235, wait_for_res
     }
     
     try:
+        print(f"\nUsing {mode} mode at endpoint: {endpoint}")
         response = requests.post(endpoint, json=payload, headers=headers)
         response.raise_for_status()
         result = response.json()
         
-        if 'task_id' in result:
+        if mode == 'async' and 'task_id' in result:
             task_id = result['task_id']
-            print(f"\nTask ID: {task_id}")
+            print(f"Task ID: {task_id}")
+            final_result = wait_for_task_completion(base_url, task_id, headers)
+            save_markdown_result(final_result)
+            return final_result
+        else:
+            # Direct or sync mode - result is immediate
+            save_markdown_result(result)
+            return result
             
-            if wait_for_result:
-                final_result = wait_for_task_completion(base_url, task_id, headers)
-                if 'result' in final_result:
-                    # Handle nested result structure
-                    markdown_content = final_result['result'].get('result', '')
-                    if isinstance(markdown_content, dict):
-                        markdown_content = json.dumps(markdown_content, indent=2)
-                    
-                    # Save markdown to file
-                    with open('crawl_result.md', 'w') as f:
-                        f.write(markdown_content)
-                    print(f"\nMarkdown result saved to crawl_result.md")
-                return final_result
-            
-        return result
-        
     except requests.exceptions.ConnectionError:
         print(f"Error: Could not connect to crawl service at {endpoint}")
         print("Make sure the service is running and the host/port are correct")
@@ -122,12 +132,13 @@ def main():
     parser.add_argument('url', help='The URL to crawl')
     parser.add_argument('--host', default='localhost', help='Hostname of the crawl service')
     parser.add_argument('--port', type=int, default=11235, help='Port number of the crawl service')
-    parser.add_argument('--no-wait', action='store_true', help='Don\'t wait for task completion')
+    parser.add_argument('--mode', choices=['async', 'sync', 'direct'], 
+                        default='sync', help='Crawl mode to use')
     
     args = parser.parse_args()
     
-    result = crawl_url(args.url, args.host, args.port, wait_for_result=not args.no_wait)
-    print(json.dumps(result, indent=2))
+    result = crawl_url(args.url, args.mode, args.host, args.port)
+    # print(json.dumps(result, indent=2))
 
 if __name__ == "__main__":
     main()
